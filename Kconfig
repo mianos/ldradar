@@ -1,0 +1,19 @@
+menu "LD radar"
+
+config LD1125_DETECTION_TIMEOUT_MS
+    int "Detection clear timeout (ms)"
+    default 3000
+    help
+      After the last valid detection, wait this many milliseconds before
+      emitting a Cleared event.
+
+config LD1125_PRESENCE_INTERVAL_MS
+    int "Presence minimum update interval (ms, 0 disables throttling)"
+    default 0
+
+config LD1125_TRACKING_INTERVAL_MS
+    int "Tracking minimum update interval (ms, 0 disables throttling)"
+    default 0
+
+endmenu
+
