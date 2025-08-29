@@ -27,33 +27,76 @@ public:
         static constexpr char saveCmd[] = "save\r\n";
 
         ESP_LOGI(TAG, "test mode called =========================================== ");
+        ESP_LOGD(TAG, "verifyTestMode: begin, timeout=1000 ms");
+
+        // Added: simple retry policy (3 tries, 1000 ms each, 100 ms gap).
+        const int max_attempts = 3;
+        const int per_attempt_timeout_ms = 1000;
+        const int inter_attempt_delay_ms = 100;
+
         enum class ModeState { IDLE, SENT, ACKED, TIMEOUT };
 
         ModeState mode_state = ModeState::IDLE;
-        std::string response_buffer;
-        int64_t start_time_ms = esp_timer_get_time() / 1000;
 
-        uart_flush_input(uartPort);
-        uart_write_bytes(uartPort, testModeCmd, sizeof(testModeCmd) - 1);
-        mode_state = ModeState::SENT;
+        for (int attempt_index = 1; attempt_index <= max_attempts; ++attempt_index) {
+            std::string response_buffer;
+            int64_t start_time_ms = esp_timer_get_time() / 1000;
 
-        while ((esp_timer_get_time() / 1000 - start_time_ms) < 1000) {
-            uint8_t byte_value = 0;
-            if (uart_read_bytes(uartPort, &byte_value, 1, 10 / portTICK_PERIOD_MS) > 0) {
-                response_buffer.push_back(static_cast<char>(byte_value));
-                if (response_buffer.find("str=") != std::string::npos) {
-                    mode_state = ModeState::ACKED;
-                    break;
+            uart_flush_input(uartPort);
+            ESP_LOGD(TAG, "verifyTestMode: uart_flush_input called (attempt %d/%d)",
+                     attempt_index, max_attempts);
+
+            uart_write_bytes(uartPort, testModeCmd, sizeof(testModeCmd) - 1);
+            ESP_LOGD(TAG,
+                     "verifyTestMode: wrote test_mode cmd (expected %u bytes) [attempt %d/%d]",
+                     static_cast<unsigned int>(sizeof(testModeCmd) - 1),
+                     attempt_index, max_attempts);
+            mode_state = ModeState::SENT;
+
+            while ((esp_timer_get_time() / 1000 - start_time_ms) < per_attempt_timeout_ms) {
+                uint8_t byte_value = 0;
+                if (uart_read_bytes(uartPort, &byte_value, 1, 10 / portTICK_PERIOD_MS) > 0) {
+                    char incoming_char = static_cast<char>(byte_value);
+                    response_buffer.push_back(incoming_char);
+                    ESP_LOGD(TAG, "verifyTestMode: recv 0x%02X '%c' [attempt %d/%d]",
+                             static_cast<unsigned int>(byte_value),
+                             (incoming_char >= 32 && incoming_char <= 126) ? incoming_char : '.',
+                             attempt_index, max_attempts);
+
+                    if (response_buffer.find("str=") != std::string::npos) {
+                        mode_state = ModeState::ACKED;
+                        int64_t elapsed_ms = (esp_timer_get_time() / 1000 - start_time_ms);
+                        ESP_LOGI(TAG,
+                                 "verifyTestMode: ACK detected (\"str=\") after %lld ms; buf_len=%u [attempt %d/%d]",
+                                 static_cast<long long>(elapsed_ms),
+                                 static_cast<unsigned int>(response_buffer.size()),
+                                 attempt_index, max_attempts);
+                        break;
+                    }
                 }
+            }
+
+            if (mode_state == ModeState::ACKED) {
+                uart_write_bytes(uartPort, saveCmd, sizeof(saveCmd) - 1);
+                ESP_LOGD(TAG, "verifyTestMode: wrote save cmd (expected %u bytes)",
+                         static_cast<unsigned int>(sizeof(saveCmd) - 1));
+                ESP_LOGI(TAG, "Test mode enabled and configuration saved.");
+                return;
+            }
+
+            mode_state = ModeState::TIMEOUT;
+            ESP_LOGW(TAG,
+                     "verifyTestMode: timeout waiting for ACK; buffer=\"%s\" [attempt %d/%d]",
+                     response_buffer.c_str(), attempt_index, max_attempts);
+
+            if (attempt_index < max_attempts) {
+                vTaskDelay(pdMS_TO_TICKS(inter_attempt_delay_ms));
+                ESP_LOGD(TAG, "verifyTestMode: retrying after %d ms gap", inter_attempt_delay_ms);
             }
         }
 
-        if (mode_state == ModeState::ACKED) {
-            uart_write_bytes(uartPort, saveCmd, sizeof(saveCmd) - 1);
-            ESP_LOGI(TAG, "Test mode enabled and configuration saved.");
-        } else {
-            ESP_LOGI(TAG, "Failed to enable test mode: timeout.");
-        }
+        // Final outcome after all attempts
+        ESP_LOGI(TAG, "Failed to enable test mode: timeout.");
     }
 
     std::vector<std::unique_ptr<Value>> get_decoded_radar_data() override {
